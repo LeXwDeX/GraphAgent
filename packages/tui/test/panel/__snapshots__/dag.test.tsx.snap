@@ -8,7 +8,6 @@ exports[`how it looks 80 by 24, in Chinese 1`] = `
                                                                                 
                                                                                 
                                                                                 
-                                                                                
   ╭──────────────────────────────────────────────────────────────────────────╮  
   │ 工作流 [运行中] 依赖升级验证                                             │  
   │ DAG 模式：关 · 运行 0/4（全进程） · 节点上限 32 · token 0（未设预算）    │  
@@ -22,15 +21,15 @@ exports[`how it looks 80 by 24, in Chinese 1`] = `
   │   第 4 波  ○ unit                                                        │  
   │                                                                          │  
   │   ripgrep 下载超时（504）                                                │  
-  │ ↑↓ 选择 · ⏎ 进入子 agent · I 请主 agent 处理（预填，不发送） · esc 关闭  │  
+  │ ↑↓ 选择 · ⏎ 查看输出 · I 请主 agent 处理（预填，不发送） · esc 关闭      │  
   ╰──────────────────────────────────────────────────────────────────────────╯  
+                                                                                
                                                                                 
 "
 `;
 
 exports[`how it looks 120 by 40, in Chinese 1`] = `
 "  ◇─◆ GraphAgent                                                                                                        
-                                                                                                                        
                                                                                                                         
                                                                                                                         
                                                                                                                         
@@ -66,15 +65,15 @@ exports[`how it looks 120 by 40, in Chinese 1`] = `
   │   第 4 波  ○ unit                                                                                                │  
   │                                                                                                                  │  
   │   ripgrep 下载超时（504）                                                                                        │  
-  │ ↑↓ 选择 · ⏎ 进入子 agent · I 请主 agent 处理（预填，不发送） · esc 关闭                                          │  
+  │ ↑↓ 选择 · ⏎ 查看输出 · I 请主 agent 处理（预填，不发送） · esc 关闭                                              │  
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
+                                                                                                                        
                                                                                                                         
 "
 `;
 
 exports[`how it looks 80 by 24, in English 1`] = `
 "  ◇─◆ GraphAgent                                                                
-                                                                                
                                                                                 
                                                                                 
                                                                                 
@@ -94,15 +93,15 @@ exports[`how it looks 80 by 24, in English 1`] = `
   │   Wave 4  ○ unit                                                         │  
   │                                                                          │  
   │   ripgrep 下载超时（504）                                                │  
-  │ ↑↓ Select · ⏎ Sub-agent · I Ask main agent (prefilled, not sent) · esc … │  
+  │ ↑↓ Select · ⏎ View output · I Ask main agent (prefilled, not sent) · es… │  
   ╰──────────────────────────────────────────────────────────────────────────╯  
+                                                                                
                                                                                 
 "
 `;
 
 exports[`how it looks a workflow with several tabs and a loop, 100 by 30 1`] = `
 "  ◇─◆ GraphAgent                                                                                    
-                                                                                                    
                                                                                                     
                                                                                                     
                                                                                                     
@@ -131,12 +130,12 @@ exports[`how it looks a workflow with several tabs and a loop, 100 by 30 1`] = `
   │ ↑↓ 选择 · ←→ 切换标签 · ⏎ 查看输出 · I 请主 agent 处理（预填，不发送） · esc 关闭            │  
   ╰──────────────────────────────────────────────────────────────────────────────────────────────╯  
                                                                                                     
+                                                                                                    
 "
 `;
 
 exports[`how it looks a compose expansion folded, 80 by 24, in Chinese 1`] = `
 "  ◇─◆ GraphAgent                                                                
-                                                                                
                                                                                 
                                                                                 
                                                                                 
@@ -159,12 +158,12 @@ exports[`how it looks a compose expansion folded, 80 by 24, in Chinese 1`] = `
   │ ↑↓ 选择 · 空格 展开子节点 · ⏎ 查看输出 · esc 关闭                        │  
   ╰──────────────────────────────────────────────────────────────────────────╯  
                                                                                 
+                                                                                
 "
 `;
 
 exports[`how it looks a compose expansion folded, 120 by 40, in Chinese 1`] = `
 "  ◇─◆ GraphAgent                                                                                                        
-                                                                                                                        
                                                                                                                         
                                                                                                                         
                                                                                                                         
@@ -203,12 +202,12 @@ exports[`how it looks a compose expansion folded, 120 by 40, in Chinese 1`] = `
   │ ↑↓ 选择 · 空格 展开子节点 · ⏎ 查看输出 · I 请主 agent 处理（预填，不发送） · esc 关闭                            │  
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
                                                                                                                         
+                                                                                                                        
 "
 `;
 
 exports[`how it looks a compose expansion folded, 80 by 24, in English 1`] = `
 "  ◇─◆ GraphAgent                                                                
-                                                                                
                                                                                 
                                                                                 
                                                                                 
@@ -231,12 +230,12 @@ exports[`how it looks a compose expansion folded, 80 by 24, in English 1`] = `
   │ ↑↓ Select · space Unfold · ⏎ View output · esc Close                     │  
   ╰──────────────────────────────────────────────────────────────────────────╯  
                                                                                 
+                                                                                
 "
 `;
 
 exports[`how it looks a compose expansion unfolded, 80 by 24, in Chinese 1`] = `
 "  ◇─◆ GraphAgent                                                                
-                                                                                
                                                                                 
                                                                                 
                                                                                 
@@ -259,12 +258,12 @@ exports[`how it looks a compose expansion unfolded, 80 by 24, in Chinese 1`] = `
   │ ↑↓ 选择 · 空格 折叠子节点 · ⏎ 查看输出 · esc 关闭                        │  
   ╰──────────────────────────────────────────────────────────────────────────╯  
                                                                                 
+                                                                                
 "
 `;
 
 exports[`how it looks a compose expansion unfolded, 120 by 40, in English 1`] = `
 "  ◇─◆ GraphAgent                                                                                                        
-                                                                                                                        
                                                                                                                         
                                                                                                                         
                                                                                                                         
@@ -303,12 +302,12 @@ exports[`how it looks a compose expansion unfolded, 120 by 40, in English 1`] = 
   │ ↑↓ Select · space Fold · ⏎ View output · I Ask main agent (prefilled, not sent) · esc Close                      │  
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
                                                                                                                         
+                                                                                                                        
 "
 `;
 
 exports[`how it looks a slot inside a slot, both unfolded, 120 by 40, in Chinese 1`] = `
 "  ◇─◆ GraphAgent                                                                                                        
-                                                                                                                        
                                                                                                                         
                                                                                                                         
                                                                                                                         
@@ -347,12 +346,12 @@ exports[`how it looks a slot inside a slot, both unfolded, 120 by 40, in Chinese
   │ ↑↓ 选择 · 空格 折叠子节点 · ⏎ 查看输出 · I 请主 agent 处理（预填，不发送） · esc 关闭                            │  
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
                                                                                                                         
+                                                                                                                        
 "
 `;
 
 exports[`the usage row how it looks 80 by 24, in Chinese 1`] = `
 "  ◇─◆ GraphAgent                                                                
-                                                                                
                                                                                 
                                                                                 
                                                                                 
@@ -372,15 +371,15 @@ exports[`the usage row how it looks 80 by 24, in Chinese 1`] = `
   │   │        ● typecheck  9m 0s                                            │  
   │                                                                          │  
   │   ripgrep 下载超时（504）                                                │  
-  │ ↑↓ 选择 · ⏎ 进入子 agent · I 请主 agent 处理（预填，不发送） · esc 关闭  │  
+  │ ↑↓ 选择 · ⏎ 查看输出 · I 请主 agent 处理（预填，不发送） · esc 关闭      │  
   ╰──────────────────────────────────────────────────────────────────────────╯  
+                                                                                
                                                                                 
 "
 `;
 
 exports[`the usage row how it looks 120 by 40, in Chinese 1`] = `
 "  ◇─◆ GraphAgent                                                                                                        
-                                                                                                                        
                                                                                                                         
                                                                                                                         
                                                                                                                         
@@ -416,15 +415,15 @@ exports[`the usage row how it looks 120 by 40, in Chinese 1`] = `
   │   第 4 波  ○ unit                                                                                                │  
   │                                                                                                                  │  
   │   ripgrep 下载超时（504）                                                                                        │  
-  │ ↑↓ 选择 · ⏎ 进入子 agent · I 请主 agent 处理（预填，不发送） · esc 关闭                                          │  
+  │ ↑↓ 选择 · ⏎ 查看输出 · I 请主 agent 处理（预填，不发送） · esc 关闭                                              │  
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
+                                                                                                                        
                                                                                                                         
 "
 `;
 
 exports[`the usage row how it looks 80 by 24, in English 1`] = `
 "  ◇─◆ GraphAgent                                                                
-                                                                                
                                                                                 
                                                                                 
                                                                                 
@@ -444,15 +443,15 @@ exports[`the usage row how it looks 80 by 24, in English 1`] = `
   │   │       ● typecheck  9m 0s                                             │  
   │                                                                          │  
   │   ripgrep 下载超时（504）                                                │  
-  │ ↑↓ Select · ⏎ Sub-agent · I Ask main agent (prefilled, not sent) · esc … │  
+  │ ↑↓ Select · ⏎ View output · I Ask main agent (prefilled, not sent) · es… │  
   ╰──────────────────────────────────────────────────────────────────────────╯  
+                                                                                
                                                                                 
 "
 `;
 
 exports[`the worktree row how it looks active, 80 by 24, in Chinese 1`] = `
 "  ◇─◆ GraphAgent                                                                
-                                                                                
                                                                                 
                                                                                 
                                                                                 
@@ -472,15 +471,15 @@ exports[`the worktree row how it looks active, 80 by 24, in Chinese 1`] = `
   │   第 4 波  ○ unit                                                        │  
   │                                                                          │  
   │   ripgrep 下载超时（504）                                                │  
-  │ ↑↓ 选择 · ⏎ 进入子 agent · I 请主 agent 处理（预填，不发送） · esc 关闭  │  
+  │ ↑↓ 选择 · ⏎ 查看输出 · I 请主 agent 处理（预填，不发送） · esc 关闭      │  
   ╰──────────────────────────────────────────────────────────────────────────╯  
+                                                                                
                                                                                 
 "
 `;
 
 exports[`the worktree row how it looks active, 120 by 40, in Chinese 1`] = `
 "  ◇─◆ GraphAgent                                                                                                        
-                                                                                                                        
                                                                                                                         
                                                                                                                         
                                                                                                                         
@@ -516,15 +515,15 @@ exports[`the worktree row how it looks active, 120 by 40, in Chinese 1`] = `
   │   第 4 波  ○ unit                                                                                                │  
   │                                                                                                                  │  
   │   ripgrep 下载超时（504）                                                                                        │  
-  │ ↑↓ 选择 · ⏎ 进入子 agent · I 请主 agent 处理（预填，不发送） · esc 关闭                                          │  
+  │ ↑↓ 选择 · ⏎ 查看输出 · I 请主 agent 处理（预填，不发送） · esc 关闭                                              │  
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
+                                                                                                                        
                                                                                                                         
 "
 `;
 
 exports[`the worktree row how it looks active, 80 by 24, in English 1`] = `
 "  ◇─◆ GraphAgent                                                                
-                                                                                
                                                                                 
                                                                                 
                                                                                 
@@ -544,15 +543,15 @@ exports[`the worktree row how it looks active, 80 by 24, in English 1`] = `
   │   Wave 4  ○ unit                                                         │  
   │                                                                          │  
   │   ripgrep 下载超时（504）                                                │  
-  │ ↑↓ Select · ⏎ Sub-agent · I Ask main agent (prefilled, not sent) · esc … │  
+  │ ↑↓ Select · ⏎ View output · I Ask main agent (prefilled, not sent) · es… │  
   ╰──────────────────────────────────────────────────────────────────────────╯  
+                                                                                
                                                                                 
 "
 `;
 
 exports[`the worktree row how it looks kept, 120 by 40, in English 1`] = `
 "  ◇─◆ GraphAgent                                                                                                        
-                                                                                                                        
                                                                                                                         
                                                                                                                         
                                                                                                                         
@@ -588,15 +587,15 @@ exports[`the worktree row how it looks kept, 120 by 40, in English 1`] = `
   │   Wave 4  ○ unit                                                                                                 │  
   │                                                                                                                  │  
   │   ripgrep 下载超时（504）                                                                                        │  
-  │ ↑↓ Select · ⏎ Sub-agent · I Ask main agent (prefilled, not sent) · esc Close                                     │  
+  │ ↑↓ Select · ⏎ View output · I Ask main agent (prefilled, not sent) · esc Close                                   │  
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
+                                                                                                                        
                                                                                                                         
 "
 `;
 
 exports[`the worktree row how it looks cleaned up, 80 by 24, in Chinese 1`] = `
 "  ◇─◆ GraphAgent                                                                
-                                                                                
                                                                                 
                                                                                 
                                                                                 
@@ -616,15 +615,15 @@ exports[`the worktree row how it looks cleaned up, 80 by 24, in Chinese 1`] = `
   │   第 4 波  ○ unit                                                        │  
   │                                                                          │  
   │   ripgrep 下载超时（504）                                                │  
-  │ ↑↓ 选择 · ⏎ 进入子 agent · I 请主 agent 处理（预填，不发送） · esc 关闭  │  
+  │ ↑↓ 选择 · ⏎ 查看输出 · I 请主 agent 处理（预填，不发送） · esc 关闭      │  
   ╰──────────────────────────────────────────────────────────────────────────╯  
+                                                                                
                                                                                 
 "
 `;
 
 exports[`the worktree row how it looks cleaned up, 120 by 40, in English 1`] = `
 "  ◇─◆ GraphAgent                                                                                                        
-                                                                                                                        
                                                                                                                         
                                                                                                                         
                                                                                                                         
@@ -660,15 +659,15 @@ exports[`the worktree row how it looks cleaned up, 120 by 40, in English 1`] = `
   │   Wave 4  ○ unit                                                                                                 │  
   │                                                                                                                  │  
   │   ripgrep 下载超时（504）                                                                                        │  
-  │ ↑↓ Select · ⏎ Sub-agent · I Ask main agent (prefilled, not sent) · esc Close                                     │  
+  │ ↑↓ Select · ⏎ View output · I Ask main agent (prefilled, not sent) · esc Close                                   │  
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
+                                                                                                                        
                                                                                                                         
 "
 `;
 
 exports[`DAG mode in the panel: how it looks 80 by 24, in Chinese 1`] = `
 "  ◇─◆ GraphAgent                                                                
-                                                                                
                                                                                 
                                                                                 
                                                                                 
@@ -691,12 +690,12 @@ exports[`DAG mode in the panel: how it looks 80 by 24, in Chinese 1`] = `
   │ ↑↓ 选择 · ⏎ 查看输出 · I 请主 agent 处理（预填，不发送） · esc 关闭      │  
   ╰──────────────────────────────────────────────────────────────────────────╯  
                                                                                 
+                                                                                
 "
 `;
 
 exports[`DAG mode in the panel: how it looks 120 by 40, in Chinese 1`] = `
 "  ◇─◆ GraphAgent                                                                                                        
-                                                                                                                        
                                                                                                                         
                                                                                                                         
                                                                                                                         
@@ -735,12 +734,12 @@ exports[`DAG mode in the panel: how it looks 120 by 40, in Chinese 1`] = `
   │ ↑↓ 选择 · ⏎ 查看输出 · I 请主 agent 处理（预填，不发送） · esc 关闭                                              │  
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
                                                                                                                         
+                                                                                                                        
 "
 `;
 
 exports[`DAG mode in the panel: how it looks 80 by 24, in English 1`] = `
 "  ◇─◆ GraphAgent                                                                
-                                                                                
                                                                                 
                                                                                 
                                                                                 
@@ -763,12 +762,12 @@ exports[`DAG mode in the panel: how it looks 80 by 24, in English 1`] = `
   │ ↑↓ Select · ⏎ View output · I Ask main agent (prefilled, not sent) · es… │  
   ╰──────────────────────────────────────────────────────────────────────────╯  
                                                                                 
+                                                                                
 "
 `;
 
 exports[`DAG mode in the panel: how it looks 120 by 40, in English 1`] = `
 "  ◇─◆ GraphAgent                                                                                                        
-                                                                                                                        
                                                                                                                         
                                                                                                                         
                                                                                                                         
@@ -806,6 +805,7 @@ exports[`DAG mode in the panel: how it looks 120 by 40, in English 1`] = `
   │   ripgrep 下载超时（504）                                                                                        │  
   │ ↑↓ Select · ⏎ View output · I Ask main agent (prefilled, not sent) · esc Close                                   │  
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
+                                                                                                                        
                                                                                                                         
 "
 `;
