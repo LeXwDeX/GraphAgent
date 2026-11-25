@@ -319,12 +319,12 @@ describe("the drawer's sections", () => {
     }
   })
 
-  test("mark todo items: done gray, in progress in the brand color, pending dim", async () => {
+  test("mark todo items: done in the success color, in progress in the brand color, pending dim", async () => {
     const harness = await mountDrawer({ data: { todo: FULL.todo } })
     try {
       await column(harness, 120, has("跑 CI"), "the todo")
       const spans = await harness.spans()
-      expect(colorOf(spans, "✓")?.equals(palette().textMuted)).toBe(true)
+      expect(colorOf(spans, "✓")?.equals(palette().success)).toBe(true)
       expect(colorOf(spans, "●")?.equals(palette().primary)).toBe(true)
       expect(colorOf(spans, "○")?.equals(palette().textDim)).toBe(true)
     } finally {
@@ -356,7 +356,7 @@ describe("the context bar", () => {
         expect(lines.some((line) => line.includes(`${input + 1} / 1,000 tokens`))).toBe(true)
         const spans = await harness.spans()
         expect(colorOf(spans, `${percent}%`)?.equals(palette()[token])).toBe(true)
-        expect(colorOf(spans, "█")?.equals(palette()[token])).toBe(true)
+        expect(colorOf(spans, "▰")?.equals(palette()[token])).toBe(true)
       } finally {
         await harness.dispose()
       }

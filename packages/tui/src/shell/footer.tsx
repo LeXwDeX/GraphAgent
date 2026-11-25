@@ -91,6 +91,8 @@ export type FooterProps = {
   subagent?: FooterSubagent
   /** Shared right-hand slot for transient footer content. */
   right?: JSX.Element
+  /** Opens the project-trust panel when the trust reminder is clicked. */
+  onTrustOpen?: () => void
 }
 
 const GAP = 1
@@ -269,7 +271,16 @@ export function Footer(props: FooterProps) {
       </Show>
       <Show when={layout().trust}>
         <box paddingLeft={layout().trustGap}>
-          <text fg={theme.warning} wrapMode="none">
+          <text
+            fg={theme.warning}
+            wrapMode="none"
+            onMouseUp={(event) => {
+              if (!props.onTrustOpen) return
+              event.preventDefault()
+              event.stopPropagation()
+              props.onTrustOpen()
+            }}
+          >
             {layout().trust}
           </text>
         </box>

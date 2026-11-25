@@ -543,7 +543,8 @@ test("from a sub-agent view a click on the toast goes to the main session, in bo
     const app = await runApp({
       sessions: tree,
       args: { sessionID: alphaID },
-      width: 120,
+      // The longer read-only notice needs a wider row to leave the toast whole beside it.
+      width: 180,
       height: 30,
       handler: language === "en" ? english(fake.handler) : fake.handler,
     })

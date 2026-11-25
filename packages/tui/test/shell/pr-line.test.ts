@@ -626,8 +626,8 @@ describe("which rows the band draws", () => {
     // A quiet PR still has a row of its own only without a workflow row, and then it is the second.
     expect(draws({ trust, pr: quiet, dag })).toEqual(["trust:trust", "dag:dag"])
     expect(draws({ trust, pr: quiet, goal })).toEqual(["trust:trust", "pr:pr"])
-    // The goal and the reminder are what is left for the second row when nothing ranks between them and the trust row.
-    expect(draws({ trust, goal, reminder })).toEqual(["trust:trust", "goal:goal"])
+    // The goal gives way to the trust warning; the reminder is what is left for the second row.
+    expect(draws({ trust, goal, reminder })).toEqual(["trust:trust", "reminder:reminder"])
     expect(draws({ trust, reminder })).toEqual(["trust:trust", "reminder:reminder"])
   })
 
@@ -780,7 +780,8 @@ describe("where the background runs go on the band", () => {
     expect(draws({ trust, dag, background })).toEqual(["trust:trust", "dag:dag◇"])
     expect(draws({ trust, dag, goal, background })).toEqual(["trust:trust", "dag:dag◇"])
     expect(draws({ trust, pr: quiet, background })).toEqual(["trust:trust", "pr:pr◇"])
-    expect(draws({ trust, goal, background })).toEqual(["trust:trust", "goal:goal◇"])
+    // The goal is pushed out by the trust warning, so the runs have no row to ride on.
+    expect(draws({ trust, goal, background })).toEqual(["trust:trust"])
     expect(draws({ trust, reminder, background })).toEqual(["trust:trust", "reminder:reminder◇"])
     // Under a PR warning too, the trust row first and the warning second: neither takes it.
     expect(draws({ trust, pr: warned, dag, background })).toEqual(["trust:trust", "pr:pr!"])

@@ -42,7 +42,7 @@ test("a session's top bar names its directory and branch before its title, and t
       "the directory, the branch and the title",
     )
     expect(firstRow(frame)).toStartWith(`  ◇─◆ GraphAgent  ${directory} (main) › Layout guard`)
-    expect(firstRow(frame)).toEndWith("Test model")
+    expect(firstRow(frame)).toEndWith("test/Test model")
   } finally {
     await app.stop()
   }

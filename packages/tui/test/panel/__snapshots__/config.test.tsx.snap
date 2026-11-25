@@ -35,7 +35,7 @@ exports[`the general, model and shortcuts tabs at 80x24 and 120x40, zh-CN 2`] = 
   │   推理强度              默认                                             │  
   │   标题模型              a-provider/a-model-with-a-name-far-too-long-for… │  
   │   打开 /model 选择模型；按 agent 分别记录                                │  
-  │ ↑↓ 选择 · ←→ 切换标签 · ⏎ 确认 · esc 关闭                                │  
+  │ ↑↓ 选择 · ←→ 切换标签 · ⏎ 进入 · esc 关闭                                │  
   ╰──────────────────────────────────────────────────────────────────────────╯  
                                                                                 
                                                                                 
@@ -135,7 +135,7 @@ exports[`the general, model and shortcuts tabs at 80x24 and 120x40, zh-CN 5`] = 
   │   推理强度              默认                                                                                     │  
   │   标题模型              a-provider/a-model-with-a-name-far-too-long-for-the-value-column-of-this-panel           │  
   │   打开 /model 选择模型；按 agent 分别记录                                                                        │  
-  │ ↑↓ 选择 · ←→ 切换标签 · ⏎ 确认 · esc 关闭                                                                        │  
+  │ ↑↓ 选择 · ←→ 切换标签 · ⏎ 进入 · esc 关闭                                                                        │  
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
                                                                                                                         
                                                                                                                         
@@ -251,7 +251,7 @@ exports[`the general, model and shortcuts tabs at 80x24 and 120x40, en 2`] = `
   │   Reasoning effort      Default                                          │  
   │   Title model           a-provider/a-model-with-a-name-far-too-long-for… │  
   │   Opens /model to pick a model; kept per agent                           │  
-  │ ↑↓ Select · ←→ Switch tab · ⏎ Confirm · esc Close                        │  
+  │ ↑↓ Select · ←→ Switch tab · ⏎ Enter · esc Close                          │  
   ╰──────────────────────────────────────────────────────────────────────────╯  
                                                                                 
                                                                                 
@@ -351,7 +351,7 @@ exports[`the general, model and shortcuts tabs at 80x24 and 120x40, en 5`] = `
   │   Reasoning effort      Default                                                                                  │  
   │   Title model           a-provider/a-model-with-a-name-far-too-long-for-the-value-column-of-this-panel           │  
   │   Opens /model to pick a model; kept per agent                                                                   │  
-  │ ↑↓ Select · ←→ Switch tab · ⏎ Confirm · esc Close                                                                │  
+  │ ↑↓ Select · ←→ Switch tab · ⏎ Enter · esc Close                                                                  │  
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
                                                                                                                         
                                                                                                                         

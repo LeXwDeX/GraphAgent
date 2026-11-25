@@ -1227,12 +1227,14 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
     const info = current
       ? sync.data.provider.find((item) => item.id === current.providerID)?.models[current.modelID]
       : undefined
-    const right: TopBarRight = {
-      model: info?.name ?? current?.modelID,
-      reasoning: local.model.variant.current(),
-    }
+    const right: TopBarRight = subagent()
+      ? {}
+      : {
+          model: current ? `${current.providerID}/${info?.name ?? current.modelID}` : undefined,
+          reasoning: local.model.variant.current(),
+        }
 
-    if (route.data.type === "session") {
+    if (!subagent() && route.data.type === "session") {
       const messages = sync.data.message[route.data.sessionID] ?? []
       const last = messages.findLast((item) => item.role === "assistant" && item.tokens.output > 0)
       if (last?.role === "assistant") {
@@ -1309,10 +1311,11 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
                 : subagent()
                   ? subagentFooterHints(footerKeys().drawer, (subagentPosition()?.total ?? 0) > 1)
                   : footerKeys().hints,
-            meta: route.data.type === "home" ? homeMeta() : { trust: homeMeta().trust },
+            meta: route.data.type === "home" ? homeMeta() : subagent() ? {} : { trust: homeMeta().trust },
             dag: dagIndicator(),
             subagent: subagent(),
             right: footerStatus(),
+            onTrustOpen: () => openTrustPanel("manage", sync.trust.importedReview?.ids),
           }}
           statusBand={route.data.type === "session" ? <SessionStatusBand /> : undefined}
           bottomZone={<BottomZone state={bottomZone} />}

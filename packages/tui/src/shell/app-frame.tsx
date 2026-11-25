@@ -49,6 +49,8 @@ export type AppFrameFooter = {
   /** Set in a sub-agent view: the read-only notice takes the place of the agent name. */
   subagent?: FooterSubagent
   right?: JSX.Element
+  /** Opens the project-trust panel from the footer reminder. */
+  onTrustOpen?: () => void
 }
 
 export type AppFrameProps = {
@@ -147,6 +149,7 @@ export function AppFrame(props: AppFrameProps) {
           <Slot content={props.drawer} wrap={(content) => <Drawer>{content}</Drawer>} />
         </box>
         <Slot content={props.bottomZone} />
+        <box height={1} flexShrink={0} />
         <Footer
           agent={props.footer?.agent}
           agentAction={props.footer?.agentAction}
@@ -155,6 +158,7 @@ export function AppFrame(props: AppFrameProps) {
           dag={props.footer?.dag}
           subagent={props.footer?.subagent}
           right={props.footer?.right}
+          onTrustOpen={props.footer?.onTrustOpen}
         />
       </box>
     </Show>

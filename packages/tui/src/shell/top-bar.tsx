@@ -168,7 +168,8 @@ export function TopBar(props: TopBarProps) {
       { key: "context", text: value?.context, wide: true },
     ].filter((part) => Boolean(part.text))
 
-    const included = new Set(parts.filter((part) => wide || !part.wide).map((part) => part.key))
+    // A sub-agent view keeps only the position: the model, reasoning and context belong to the main session.
+    const included = new Set(parts.filter((part) => (wide || !part.wide) && !props.subagent).map((part) => part.key))
     const visible = () => parts.filter((part) => included.has(part.key)).map((part) => part.text!)
     const maxRight = Math.max(0, inner - markWidth - GAP)
 
@@ -190,7 +191,6 @@ export function TopBar(props: TopBarProps) {
     while (visible().length > 0 && cellWidth(visible().join(PART_SEPARATOR), aw) > partsBudget) {
       if (included.has("model")) included.delete("model")
       else if (included.has("context")) included.delete("context")
-      else if (subagent) included.delete("reasoning")
       else break
     }
 
@@ -315,8 +315,8 @@ function PathPart(props: { part: SubagentPathPart; onOpen?: (sessionID: string) 
   if (part.type === "ancestor") {
     const id = part.id
     return (
-      <text fg={theme.text} wrapMode="none" onMouseUp={() => props.onOpen?.(id)}>
-        {part.text}
+      <text fg={theme.textMuted} wrapMode="none" onMouseUp={() => props.onOpen?.(id)}>
+        <span style={{ fg: theme.textMuted, underline: true }}>{part.text}</span>
       </text>
     )
   }

@@ -191,11 +191,11 @@ export function goalLine(goal: Goal): GoalLine {
   return { turns, state: key ? t(key) : remoteLine(goal.status), warning: false }
 }
 
-export type TodoMark = { readonly symbol: string; readonly tone: "textMuted" | "primary" | "textDim" }
+export type TodoMark = { readonly symbol: string; readonly tone: "textMuted" | "primary" | "textDim" | "success" }
 
-/** Done `✓` in gray, in progress `●` in the brand color (static), anything else `○` dim (#1032 5.2). */
+/** Done `✓` in the success color, in progress `●` in the brand color (static), anything else `○` dim (#1032 5.2). */
 export function todoMark(status: string): TodoMark {
-  if (status === "completed") return { symbol: "✓", tone: "textMuted" }
+  if (status === "completed") return { symbol: "✓", tone: "success" }
   if (status === "in_progress") return { symbol: "●", tone: "primary" }
   return { symbol: "○", tone: "textDim" }
 }

@@ -1039,8 +1039,8 @@ describe("how it looks", () => {
 
   // The list has a filter box, so it has no tab keys on the arrows: the pair of row keys is the only pair in the row.
   const HINT_ROWS = {
-    "zh-CN": "↑↓ 选择 · ⏎ 确认 · ⌃R 请主 agent 处理 · esc 关闭",
-    en: "↑↓ Select · ⏎ Confirm · ⌃R Ask main agent · esc Close",
+    "zh-CN": "↑↓ 选择 · ⏎ 进入 · ⌃R 请主 agent 处理 · esc 关闭",
+    en: "↑↓ Select · ⏎ Enter · ⌃R Ask main agent · esc Close",
   } as const
 
   for (const language of ["zh-CN", "en"] as const) {
