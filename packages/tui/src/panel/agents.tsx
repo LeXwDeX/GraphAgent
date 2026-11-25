@@ -29,6 +29,7 @@ import {
   type SubagentRow,
 } from "../session/subagents"
 import { MARK_CELLS } from "../ui/layout"
+import { textFg, textStyle } from "../ui/text"
 import { cellWidth, truncateCells, type AmbiguousWidth } from "../ui/width"
 import { usePanelHost } from "./host"
 import { ListPanel, type ListItem } from "./list"
@@ -99,10 +100,10 @@ function PanelTitle(props: { counts: string }) {
     return { title, counts: props.counts && room > 0 ? truncateCells(props.counts, room, aw) : "" }
   })
   return (
-    <text fg={theme.primary} wrapMode="none">
-      <b>{shown().title}</b>
+    <text fg={textFg(theme, "title")} wrapMode="none">
+      <span style={textStyle(theme, "title")}>{shown().title}</span>
       <Show when={shown().counts}>
-        <span style={{ fg: theme.textMuted }}>{" ".repeat(TITLE_GAP) + shown().counts}</span>
+        <span style={textStyle(theme, "secondary")}>{" ".repeat(TITLE_GAP) + shown().counts}</span>
       </Show>
     </text>
   )
@@ -270,5 +271,5 @@ export function AgentsPanel() {
 /** No sub-agent at all, or none that the filter lets through. */
 function EmptyNote(props: { filtered: boolean }) {
   const { theme } = useTheme()
-  return <text fg={theme.textMuted}>{props.filtered ? t("panel.list.empty") : t("subagent.none")}</text>
+  return <text fg={textFg(theme, "secondary")}>{props.filtered ? t("panel.list.empty") : t("subagent.none")}</text>
 }

@@ -6,6 +6,7 @@ import { createMemo, createResource, createSignal } from "solid-js"
 import { useSDK } from "../context/sdk"
 import { useTheme } from "../context/theme"
 import { t } from "../i18n"
+import { textFg } from "../ui/text"
 import { errorMessage } from "../util/error"
 import { usePanelHost } from "./host"
 import { ListPanel, type ListItem } from "./list"
@@ -50,7 +51,7 @@ export function SkillsPanel(props: SkillsPanelProps) {
         <text fg={theme.error} attributes={TextAttributes.BOLD}>
           {t("panel.skills.error")}
         </text>
-        <text fg={theme.textMuted}>{errorMessage(error)}</text>
+        <text fg={textFg(theme, "secondary")}>{errorMessage(error)}</text>
       </box>
     )
   })

@@ -8,6 +8,7 @@ import { useSDK } from "../context/sdk"
 import { useSync } from "../context/sync"
 import { useTheme } from "../context/theme"
 import { t } from "../i18n"
+import { textFg } from "../ui/text"
 import { TuiLog } from "../util/log"
 import { ListPanel, type ListItem } from "./list"
 
@@ -34,7 +35,7 @@ function Status(props: { enabled: boolean; loading: boolean }) {
     <Show
       when={!props.loading}
       fallback={
-        <text fg={theme.textMuted} wrapMode="none">
+        <text fg={textFg(theme, "secondary")} wrapMode="none">
           {t("panel.mcp.loading")}
         </text>
       }

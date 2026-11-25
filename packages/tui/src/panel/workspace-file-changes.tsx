@@ -7,6 +7,7 @@ import { useTheme } from "../context/theme"
 import { t } from "../i18n"
 import { askConfirm } from "../ask/local-ask"
 import type { BottomZoneStateApi } from "../shell/bottom-zone"
+import { textFg } from "../ui/text"
 import { DetailPanel, type DetailRow } from "./detail"
 import type { PanelHostApi } from "./host"
 
@@ -47,7 +48,7 @@ export function WorkspaceFileChangesPanel(
     <DetailPanel
       title={props.title ?? t("panel.workspace.changes.title")}
       summary={
-        <text fg={theme.textMuted} wrapMode="word">
+        <text fg={textFg(theme, "secondary")} wrapMode="word">
           {props.message ?? t("panel.workspace.changes.message")}
         </text>
       }

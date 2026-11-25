@@ -11,6 +11,7 @@ import { useTheme } from "../context/theme"
 import { t } from "../i18n"
 import { useBindings } from "../keymap"
 import { Link } from "../ui/link"
+import { textFg } from "../ui/text"
 import { useToast } from "../ui/toast"
 import { DetailPanel } from "./detail"
 import { usePanelHost, type PanelHostApi } from "./host"
@@ -155,7 +156,7 @@ function CustomProviderForm(props: { onSubmit(providerID: string): void }) {
     <DetailPanel
       title={t("panel.provider.custom.title")}
       command="/connect"
-      body={<text fg={theme.textMuted}>{t("panel.provider.custom.description")}</text>}
+      body={<text fg={textFg(theme, "secondary")}>{t("panel.provider.custom.description")}</text>}
       input={{
         placeholder: t("panel.provider.custom.placeholder"),
         onSubmit(value) {
@@ -438,7 +439,7 @@ function MethodPanel(props: MethodPanelProps) {
         <DetailPanel
           title={props.method.label}
           command="/connect"
-          body={<text fg={theme.textMuted}>{t("panel.provider.authorizing")}</text>}
+          body={<text fg={textFg(theme, "secondary")}>{t("panel.provider.authorizing")}</text>}
           hints={[]}
         />
       </Match>
@@ -457,7 +458,7 @@ function MethodPanel(props: MethodPanelProps) {
             command="/connect"
             body={
               <box gap={1}>
-                <text fg={theme.textMuted}>{authorization.instructions}</text>
+                <text fg={textFg(theme, "secondary")}>{authorization.instructions}</text>
                 <Link href={authorization.url} fg={theme.primary} />
                 {codeError() ? <text fg={theme.error}>{t("panel.provider.code.invalid")}</text> : null}
               </box>
@@ -478,8 +479,8 @@ function MethodPanel(props: MethodPanelProps) {
             body={
               <box gap={1}>
                 <Link href={authorization.url} fg={theme.primary} />
-                <text fg={theme.textMuted}>{authorization.instructions}</text>
-                <text fg={theme.textMuted}>{t("panel.provider.waiting")}</text>
+                <text fg={textFg(theme, "secondary")}>{authorization.instructions}</text>
+                <text fg={textFg(theme, "secondary")}>{t("panel.provider.waiting")}</text>
               </box>
             }
             hints={autoHints()}

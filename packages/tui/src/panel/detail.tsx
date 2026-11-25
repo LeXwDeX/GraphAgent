@@ -8,6 +8,7 @@ import { useTheme } from "../context/theme"
 import { t } from "../i18n"
 import { EscapePriority, useBindings } from "../keymap"
 import { MARK_CELLS } from "../ui/layout"
+import { textFg } from "../ui/text"
 import { cellWidth, type AmbiguousWidth } from "../ui/width"
 import { remoteLine } from "../util/remote-text"
 import { PanelShell, type PanelHint, type PanelTab } from "./shell"
@@ -44,7 +45,7 @@ export interface DetailRow<T = unknown> {
    * where some row has a note keeps that line as the selection moves, blank for the rows without one.
    */
   note?: string
-  /** Wrapped text revealed below the row while it is selected. */
+  /** Wrapped text the row opens below itself with `panel.submit`, never by being selected. */
   body?: string
   /**
    * Space on the row calls `onToggle` although it has no check lead, as for a fold; the text is what the hint says the
@@ -74,6 +75,13 @@ export interface DetailPanelProps<T = unknown> {
   input?: { placeholder?: string; secret?: boolean; onSubmit(value: string): void }
   /** Overrides the submit hint label when `onActivate` is provided. */
   activateLabel?: string
+  /**
+   * When a row's body is open. `"folded"` (the default) opens none of them by itself: the selection opens nothing,
+   * `panel.submit` opens the row it is on and again closes it, and the rows it has opened are remembered by row id.
+   * `"selected"` keeps the body of the selected row open — the trust review and the DAG panel, whose rows are read
+   * where they are — and leaves `panel.submit` to `onActivate`, as does a panel whose rows have no bodies at all.
+   */
+  rowBody?: "folded" | "selected"
   /** Single-letter action hints from the owning panel. */
   hints: readonly PanelHint[]
   tone?: "default" | "warning"
@@ -81,6 +89,8 @@ export interface DetailPanelProps<T = unknown> {
 
 /** The gap after a text column of the rows, before the next cell. */
 export const COLUMN_GAP = 2
+/** Rows a page key moves, the count `ListPanel` uses too. */
+const PAGE_ROWS = 10
 /** What the check lead of a row draws: the box, and the gap to the first column. */
 const CHECK_LEAD = { on: "[x] ", off: "[ ] " } as const
 /** Cells a check lead takes. A panel that fits its last cell to what the lead and the columns leave takes it from here. */
@@ -92,7 +102,10 @@ export function DetailPanel<T = unknown>(props: DetailPanelProps<T>) {
   let scroll: ScrollBoxRenderable | undefined
 
   const [internalSelected, setInternalSelected] = createSignal<string | undefined>(firstSelectableId())
+  // The rows whose body `panel.submit` has opened, by row id: moving the selection opens and closes nothing.
+  const [expanded, setExpanded] = createSignal<Record<string, boolean>>({})
   let input: InputRenderable | undefined
+  let inputRow: BoxRenderable | undefined
   const rowRefs = new Map<string, BoxRenderable>()
 
   const ambiguousWidth = (): AmbiguousWidth => (kv.get("ambiguous_width", 1) === 2 ? 2 : 1)
@@ -135,6 +148,7 @@ export function DetailPanel<T = unknown>(props: DetailPanelProps<T>) {
     props.onSelect?.(row)
   }
 
+  /** One step, wrapping round both ends. */
   function move(direction: number) {
     const rows = selectableRows()
     if (rows.length === 0) return
@@ -150,9 +164,49 @@ export function DetailPanel<T = unknown>(props: DetailPanelProps<T>) {
     })
   }
 
+  /** A page of rows up or down; at the first or the last row it stops, where `move` wraps round. */
+  function page(direction: number) {
+    const rows = selectableRows()
+    if (rows.length === 0) return
+    const current = rows.findIndex((row) => row.id === selectedId())
+    moveTo((current < 0 ? 0 : current) + direction * PAGE_ROWS)
+  }
+
+  /** A place in the list, held between its ends: the first and the last row have nowhere further to go. */
+  function moveTo(index: number) {
+    const rows = selectableRows()
+    if (rows.length === 0) return
+    const next = rows[Math.min(rows.length - 1, Math.max(0, index))]
+    if (!next) return
+    if (props.selected === undefined) setInternalSelected(next.id)
+    props.onSelect?.(next)
+    queueMicrotask(() => {
+      const ref = rowRefs.get(next.id)
+      if (!ref || ref.isDestroyed) return
+      scroll?.scrollChildIntoView(ref)
+    })
+  }
+
+  /** Whether the row's body is open: the selected row's under `rowBody: "selected"`, the others only after
+   * `panel.submit`. */
+  function bodyOpen(row: DetailRow<T>) {
+    if (props.rowBody === "selected") return selectedId() === row.id
+    return expanded()[row.id] === true
+  }
+
+  function toggleBody(row: DetailRow<T>) {
+    setExpanded((current) => ({ ...current, [row.id]: current[row.id] !== true }))
+  }
+
   function activate() {
     const row = selectedRow()
     if (!row) return
+    // The key opens the row it is on when the panel leaves its rows' bodies to it; a panel that keeps the key for an
+    // action of its own says `rowBody: "selected"` and gets it back.
+    if (props.rowBody !== "selected" && row.body !== undefined) {
+      toggleBody(row)
+      return
+    }
     props.onActivate?.(row)
   }
 
@@ -183,10 +237,10 @@ export function DetailPanel<T = unknown>(props: DetailPanelProps<T>) {
     commands: [
       { name: "panel.previous", title: "Previous row", category: "Panel", run: () => move(-1) },
       { name: "panel.next", title: "Next row", category: "Panel", run: () => move(1) },
-      { name: "panel.page_up", title: "Page up", category: "Panel", run: () => move(-10) },
-      { name: "panel.page_down", title: "Page down", category: "Panel", run: () => move(10) },
-      { name: "panel.home", title: "First row", category: "Panel", run: () => move(-selectableRows().length) },
-      { name: "panel.end", title: "Last row", category: "Panel", run: () => move(selectableRows().length) },
+      { name: "panel.page_up", title: "Page up", category: "Panel", run: () => page(-1) },
+      { name: "panel.page_down", title: "Page down", category: "Panel", run: () => page(1) },
+      { name: "panel.home", title: "First row", category: "Panel", run: () => moveTo(0) },
+      { name: "panel.end", title: "Last row", category: "Panel", run: () => moveTo(selectableRows().length - 1) },
       { name: "panel.submit", title: "Activate row", category: "Panel", run: activate },
       { name: "panel.toggle", title: "Toggle row", category: "Panel", run: toggle },
       { name: "panel.tab.next", title: "Next tab", category: "Panel", run: () => cycleTab(1) },
@@ -213,11 +267,20 @@ export function DetailPanel<T = unknown>(props: DetailPanelProps<T>) {
     bindings: [{ key: "return", cmd: "panel.submit", desc: "Submit input", group: "Panel" }],
   }))
 
+  /** Keeps the input in the view: the terminal draws the cursor at the input with the focus, and a scroll that took it
+   * out of the view would leave the cursor on the screen above the panel. A scroll that moves nothing changes nothing,
+   * so this cannot loop (13.7). */
+  function keepInputInView() {
+    if (!inputRow || inputRow.isDestroyed) return
+    scroll?.scrollChildIntoView(inputRow)
+  }
+
   createEffect(() => {
     if (!props.input) return
     queueMicrotask(() => {
       if (!input || input.isDestroyed) return
       input.focus()
+      keepInputInView()
     })
   })
 
@@ -255,6 +318,8 @@ export function DetailPanel<T = unknown>(props: DetailPanelProps<T>) {
         result.push({ key: "panel.toggle", label: row.toggleLabel ?? t("panel.hint.toggle") })
       }
       if (props.onActivate) result.push({ key: "panel.submit", label: props.activateLabel ?? t("panel.hint.activate") })
+      else if (row?.body !== undefined && props.rowBody !== "selected")
+        result.push({ key: "panel.submit", label: bodyOpen(row) ? t("panel.hint.collapse") : t("panel.hint.expand") })
     }
     result.push(...props.hints)
     return result
@@ -268,7 +333,10 @@ export function DetailPanel<T = unknown>(props: DetailPanelProps<T>) {
 
   return (
     <PanelShell
-      scrollRef={(element) => (scroll = element)}
+      scrollRef={(element) => {
+        scroll = element
+        if (element) element.verticalScrollBar.onChange = keepInputInView
+      }}
       title={props.title}
       command={props.command}
       tabs={props.tabs}
@@ -332,7 +400,13 @@ export function DetailPanel<T = unknown>(props: DetailPanelProps<T>) {
                     >
                       <text
                         wrapMode="none"
-                        fg={lead().disabled ? theme.textDim : lead().checked ? theme.success : theme.textMuted}
+                        fg={
+                          lead().disabled
+                            ? textFg(theme, "disabled")
+                            : lead().checked
+                              ? theme.success
+                              : textFg(theme, "secondary")
+                        }
                       >
                         {lead().checked ? CHECK_LEAD.on : CHECK_LEAD.off}
                       </text>
@@ -356,9 +430,9 @@ export function DetailPanel<T = unknown>(props: DetailPanelProps<T>) {
                   )}
                 </For>
               </box>
-              <Show when={isSelected() && row.body}>
+              <Show when={row.body !== undefined && bodyOpen(row)}>
                 <box flexShrink={0} paddingLeft={MARK_CELLS} paddingBottom={1}>
-                  <text wrapMode="word" fg={theme.text}>
+                  <text wrapMode="word" fg={textFg(theme, "body")}>
                     {row.body!}
                   </text>
                 </box>
@@ -380,7 +454,14 @@ export function DetailPanel<T = unknown>(props: DetailPanelProps<T>) {
         </Show>
       </Show>
       <Show when={props.input}>
-        <box height={1} flexShrink={0} flexDirection="row">
+        <box
+          ref={(element: BoxRenderable) => {
+            inputRow = element
+          }}
+          height={1}
+          flexShrink={0}
+          flexDirection="row"
+        >
           <text flexShrink={0} fg={theme.primary} wrapMode="none">
             ›{" "}
           </text>
@@ -391,9 +472,9 @@ export function DetailPanel<T = unknown>(props: DetailPanelProps<T>) {
               }}
               width="100%"
               placeholder={props.input?.placeholder ?? t("panel.input.placeholder")}
-              placeholderColor={theme.textMuted}
+              placeholderColor={textFg(theme, "secondary")}
               focusedBackgroundColor={theme.backgroundPanel}
-              focusedTextColor={theme.text}
+              focusedTextColor={textFg(theme, "body")}
               cursorColor={theme.primary}
             />
           </box>

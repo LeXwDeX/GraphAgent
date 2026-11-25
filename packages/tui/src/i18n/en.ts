@@ -394,6 +394,8 @@ export const en: Record<MessageKey, string> = {
   "panel.hint.tab": "Switch tab",
   "panel.hint.close": "Close",
   "panel.hint.toggle": "Toggle",
+  "panel.hint.expand": "Expand",
+  "panel.hint.collapse": "Collapse",
   "panel.list.filter": "Filter…",
   "panel.list.empty": "No items",
   "panel.list.loading": "Loading…",

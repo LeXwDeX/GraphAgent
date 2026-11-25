@@ -1,7 +1,6 @@
 // SPDX-FileCopyrightText: 2026 LeXwDeX
 // SPDX-License-Identifier: Apache-2.0
 
-import { TextAttributes } from "@opentui/core"
 import { createMemo, createSignal, Show } from "solid-js"
 import { Spinner } from "../component/spinner"
 import { useBtw, type BtwEntry } from "../context/btw"
@@ -11,6 +10,7 @@ import { useTheme } from "../context/theme"
 import { t } from "../i18n"
 import { useBindings } from "../keymap"
 import { AdaptiveMarkdown } from "../ui/adaptive-markdown"
+import { textAttributes, textFg } from "../ui/text"
 import { useToast } from "../ui/toast"
 import { truncateCells, type AmbiguousWidth } from "../ui/width"
 import { DetailPanel } from "./detail"
@@ -136,13 +136,13 @@ export function BtwPanel(props: { sessionID: string }) {
     const current = entry()
     if (!current) {
       return (
-        <text fg={theme.textMuted} wrapMode="word">
+        <text fg={textFg(theme, "secondary")} wrapMode="word">
           {t("btw.empty")}
         </text>
       )
     }
     if (current.status === "pending") {
-      return <Spinner color={theme.textMuted}>{t("btw.waiting")}</Spinner>
+      return <Spinner color={textFg(theme, "secondary")}>{t("btw.waiting")}</Spinner>
     }
     if (current.status === "error") {
       return (
@@ -153,7 +153,7 @@ export function BtwPanel(props: { sessionID: string }) {
     }
     if (current.status === "cancelled") {
       return (
-        <text fg={theme.textMuted} wrapMode="word">
+        <text fg={textFg(theme, "secondary")} wrapMode="word">
           {t("btw.cancelled.body")}
         </text>
       )
@@ -174,11 +174,11 @@ export function BtwPanel(props: { sessionID: string }) {
     <DetailPanel
       title={
         <box flexDirection="row" gap={1}>
-          <text attributes={TextAttributes.BOLD} fg={theme.primary} wrapMode="none">
+          <text attributes={textAttributes("title")} fg={textFg(theme, "title")} wrapMode="none">
             {t("btw.title")}
           </text>
           <Show when={question()}>
-            <text fg={theme.text} wrapMode="none">
+            <text fg={textFg(theme, "body")} wrapMode="none">
               · {question()}
             </text>
           </Show>
@@ -190,22 +190,19 @@ export function BtwPanel(props: { sessionID: string }) {
           <Show
             when={entry()}
             fallback={
-              <text fg={theme.textMuted} wrapMode="none">
+              <text fg={textFg(theme, "secondary")} wrapMode="none">
                 {t("btw.empty")}
               </text>
             }
           >
             {(current) => (
-              <text
-                fg={current().status === "error" ? theme.error : theme.textMuted}
-                wrapMode="word"
-              >
+              <text fg={current().status === "error" ? theme.error : textFg(theme, "secondary")} wrapMode="word">
                 {statusLine(current())}
               </text>
             )}
           </Show>
           <Show when={entries().length > 1}>
-            <text fg={theme.textDim} wrapMode="none">
+            <text fg={textFg(theme, "hint")} wrapMode="none">
               {position()}
             </text>
           </Show>

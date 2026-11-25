@@ -10,6 +10,7 @@ import { useTheme } from "../context/theme"
 import { t } from "../i18n"
 import { EscapePriority, useBindings } from "../keymap"
 import { remoteLine } from "../util/remote-text"
+import { textFg } from "../ui/text"
 import { PanelShell, type PanelHint, type PanelTab } from "./shell"
 
 /** How many items PageUp and PageDown move the selection by. */
@@ -403,9 +404,9 @@ export function ListPanel<T>(props: ListPanelProps<T>) {
                   props.onFilter?.(value, filtered())
                 }}
                 placeholder={placeholder() ?? t("panel.list.filter")}
-                placeholderColor={theme.textMuted}
+                placeholderColor={textFg(theme, "secondary")}
                 focusedBackgroundColor={theme.backgroundPanel}
-                focusedTextColor={theme.text}
+                focusedTextColor={textFg(theme, "body")}
                 cursorColor={theme.primary}
               />
             </box>
@@ -413,10 +414,10 @@ export function ListPanel<T>(props: ListPanelProps<T>) {
         ) : undefined
       }
     >
-      <Show when={!props.loading} fallback={<text fg={theme.textMuted}>{t("panel.list.loading")}</text>}>
+      <Show when={!props.loading} fallback={<text fg={textFg(theme, "secondary")}>{t("panel.list.loading")}</text>}>
         <Show
           when={flat().length > 0}
-          fallback={props.empty ?? <text fg={theme.textMuted}>{t("panel.list.empty")}</text>}
+          fallback={props.empty ?? <text fg={textFg(theme, "secondary")}>{t("panel.list.empty")}</text>}
         >
           <For each={groups()}>
             {(group, groupIndex) => {
@@ -437,7 +438,7 @@ export function ListPanel<T>(props: ListPanelProps<T>) {
                       flexShrink={0}
                       paddingTop={groupIndex() > 0 ? 1 : 0}
                     >
-                      <text fg={theme.accent} attributes={TextAttributes.BOLD} wrapMode="none">
+                      <text fg={textFg(theme, "group")} wrapMode="none">
                         {group}
                       </text>
                     </box>
@@ -491,7 +492,7 @@ export function ListPanel<T>(props: ListPanelProps<T>) {
                                 when={typeof shown().trail === "string"}
                                 fallback={<box flexShrink={0}>{shown().trail}</box>}
                               >
-                                <text flexShrink={0} fg={theme.textMuted} wrapMode="none">
+                                <text flexShrink={0} fg={textFg(theme, "secondary")} wrapMode="none">
                                   {shown().trail as string}
                                 </text>
                               </Show>
