@@ -172,7 +172,7 @@ export function AgentsPanel() {
       <>
         {canSplit ? (
           <>
-            <span style={textStyle(theme, "group")}>{row.kind}</span>
+            <span style={textStyle(theme, "body")}>{row.kind}</span>
             <span style={textStyle(theme, "body")}>{" · "}</span>
             <span style={textStyle(theme, "secondary")}>{row.description}</span>
             <span style={textStyle(theme, "secondary")}>{name.slice(full.length)}</span>

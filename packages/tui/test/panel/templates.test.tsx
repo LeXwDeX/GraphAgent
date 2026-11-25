@@ -1130,8 +1130,8 @@ test("the note of the shell is one muted line cut to the width, and an empty not
     }
   }
 
-  // No note takes no line; an empty one takes a blank line and the note line under it.
-  expect(await heightWith("")).toBe((await heightWith(undefined)) + 2)
+  // No note takes no line; an empty one takes the note line, blank (13.7: the note row is one line).
+  expect(await heightWith("")).toBe((await heightWith(undefined)) + 1)
 
   const app = await renderPanel(() => shell("一段很长的说明".repeat(12)), { width: 80, height: 24, state: tmp.path })
   try {

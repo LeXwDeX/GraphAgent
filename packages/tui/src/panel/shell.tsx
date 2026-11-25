@@ -343,7 +343,6 @@ export function PanelShell(props: PanelShellProps) {
         </box>
       </scrollbox>
       <Show when={props.note !== undefined}>
-        <box height={1} flexShrink={0} />
         <text
           height={1}
           flexShrink={0}
