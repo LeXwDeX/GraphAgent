@@ -179,7 +179,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - runner: '["self-hosted","Linux","X64","azure-f16"]'
+          - runner: '["ubuntu-latest"]'
             name: linux
           - runner: '["macos-latest"]'
             name: macos
