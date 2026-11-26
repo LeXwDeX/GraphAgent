@@ -250,6 +250,10 @@ export function classify(error: Err, provider: string): RetryDecision {
       if (status === 429 || status === 503) return retry("rate_limit", "rate_limited", overloaded(message), { status })
       // Past the table, a 4xx without a transient signal still backs off on the wire, but it is
       // a request that fails again on resend: `invalid_request` is what `retryable` reads.
+      // 404 is the clearest case — the path or model does not exist — so it stops at once
+      // instead of resending an identical request five times. 408 keeps its backoff: that
+      // one is a transient signal by name.
+      if (status === 404 && !transient) return terminal("terminal", "invalid_request", message, status)
       return retry("http", status >= 500 || transient ? "transient" : "invalid_request", overloaded(message), {
         status,
       })

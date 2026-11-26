@@ -774,6 +774,10 @@ describe("session.retry.retryable", () => {
         // The payment status alone says the balance is gone: resending cannot succeed.
         expect(decision).toMatchObject({ branch: "terminal", class: "quota_exhausted", maxRetries: 0 })
         expect(SessionRetry.retryable(error, retryProvider)).toBeUndefined()
+      } else if (statusCode === 404) {
+        // A path or model that does not exist fails identically on resend.
+        expect(decision).toMatchObject({ branch: "terminal", class: "invalid_request", maxRetries: 0 })
+        expect(SessionRetry.retryable(error, retryProvider)).toBeUndefined()
       } else {
         expect(decision).toMatchObject({
           branch: statusCode === 429 || statusCode === 503 ? "rate_limit" : "http",
@@ -993,10 +997,10 @@ describe("session.retry.classify by provider semantics", () => {
 
   test("only a 400 or 422 reaches the invalid-request row", () => {
     const body = { error: { type: "invalid_request_error", message: "no such model" } }
-    expect(SessionRetry.classify(providerError({ statusCode: 404, responseBody: body }), retryProvider)).toMatchObject({
-      branch: "http",
+    expect(SessionRetry.classify(providerError({ statusCode: 400, responseBody: body }), retryProvider)).toMatchObject({
+      branch: "terminal",
       class: "invalid_request",
-      maxRetries: SessionRetry.RETRY_MAX_RETRIES,
+      maxRetries: 0,
     })
     expect(
       SessionRetry.classify(
@@ -1004,6 +1008,16 @@ describe("session.retry.classify by provider semantics", () => {
         retryProvider,
       ),
     ).toMatchObject({ branch: "terminal", class: "invalid_request", maxRetries: 0 })
+  })
+
+  test("a 404 is a routing answer and stops at once", () => {
+    const missing = providerError({ statusCode: 404, message: "Not Found" })
+    expect(SessionRetry.classify(missing, retryProvider)).toMatchObject({
+      branch: "terminal",
+      class: "invalid_request",
+      maxRetries: 0,
+    })
+    expect(SessionRetry.retryable(missing, retryProvider)).toBeUndefined()
   })
 
   test("the per-minute allocation reported as a quota is still a rate limit", () => {

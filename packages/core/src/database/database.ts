@@ -24,6 +24,7 @@ export class Service extends Context.Service<Service, Interface>()("@graphagent/
 export const layer = Layer.effect(
   Service,
   Effect.gen(function* () {
+    const filename = path()
     const db = yield* makeDatabase
 
     yield* db.run("PRAGMA journal_mode = WAL")
@@ -53,7 +54,7 @@ export const layer = Layer.effect(
         "database auto_vacuum is NONE — deleted pages stay allocated until converted; run `graphagent db vacuum --db <path>` (prints its path with `graphagent db path`)",
       )
     yield* db.run("PRAGMA wal_checkpoint(PASSIVE)")
-    yield* DatabaseMigration.apply(db)
+    yield* DatabaseMigration.apply(db, filename)
 
     return { db }
   }).pipe(Effect.orDie),
@@ -63,13 +64,23 @@ export function layerFromPath(filename: string) {
   return layer.pipe(Layer.provide(sqliteLayer({ filename })))
 }
 
+/**
+ * The file a channel keeps its development database in. `latest`, `beta` and
+ * `prod` are the release channels and share `<app>.db`; every other channel
+ * (source runs, a branch build) gets `<app>-<channel>.db` so a development
+ * build cannot open — or rebaseline — the database a release uses.
+ */
+export function channelFile(channel: string) {
+  if (["latest", "beta", "prod"].includes(channel)) return `${APP_NAME}.db`
+  return `${APP_NAME}-${channel.replace(/[^a-zA-Z0-9._-]/g, "-")}.db`
+}
+
 export function path() {
   if (Flag.GRAPHAGENT_DB) {
     if (Flag.GRAPHAGENT_DB === ":memory:" || isAbsolute(Flag.GRAPHAGENT_DB)) return Flag.GRAPHAGENT_DB
     return join(Global.Path.data, Flag.GRAPHAGENT_DB)
   }
-  if (["latest", "beta", "prod"].includes(InstallationChannel)) return join(Global.Path.data, `${APP_NAME}.db`)
-  return join(Global.Path.data, `${APP_NAME}-${InstallationChannel.replace(/[^a-zA-Z0-9._-]/g, "-")}.db`)
+  return join(Global.Path.data, channelFile(InstallationChannel))
 }
 
 export const defaultLayer = Layer.unwrap(

@@ -60,11 +60,11 @@ export const makeCatalogLoader =
         worker_types: new Set(agentCatalog.map((agent) => agent.name)),
         // #946: worktree isolation is only for agents that can edit files.
         // The agent contract's `public` rule (#1158) asks the same question, so
-        // both read `AgentContract.isWriterAgent`: `plan` keeps an edit
+        // both read `AgentContract.writesFiles`: `plan` keeps an edit
         // allow-list for its plan file and is excluded, every other agent is
         // judged by its effective permission rules.
         writer_types: new Set(
-          agentCatalog.filter((agent) => AgentContract.isWriterAgent(agent)).map((agent) => agent.name),
+          agentCatalog.filter((agent) => AgentContract.writesFiles(agent)).map((agent) => agent.name),
         ),
         // #1158: which agents are composers, and whether the effective catalog lets each one run.
         composers: DagCompose.catalogFrom(agentCatalog),

@@ -1147,14 +1147,6 @@ export const layer = Layer.effect(
               return yield* Effect.fail(incompleteReasoning(ctx.attempt))
             }
           }).pipe(
-            Effect.onInterrupt(() =>
-              Effect.gen(function* () {
-                aborted = true
-                if (!ctx.assistantMessage.error) {
-                  yield* halt(new DOMException("Aborted", "AbortError"))
-                }
-              }),
-            ),
             Effect.catchCauseIf(
               (cause) => !Cause.hasInterruptsOnly(cause),
               (cause) => Effect.fail(Cause.squash(cause)),
@@ -1213,6 +1205,26 @@ export const layer = Layer.effect(
                       }),
                     ),
                   ),
+              }),
+            ),
+            // Outside `retry`: the backoff sleep sits between attempts, and an
+            // interrupt there used to leave the turn with no error, no finish and
+            // an empty assistant message. Here every interrupt, in a stream or in
+            // a sleep, writes the abort and settles the message.
+            Effect.onInterrupt(() =>
+              Effect.gen(function* () {
+                aborted = true
+                if (ctx.assistantMessage.error) return
+                // `halt` classifies the abort, and the retry policy reads the same
+                // classification to decide a turn is over. A bare DOMException fell
+                // through to the generic reconnect branch, so the loop started the
+                // turn again after the user had cancelled it.
+                const error = parse(new DOMException("Aborted", "AbortError"))
+                ctx.assistantMessage.error = error
+                ctx.assistantMessage.finish = "error"
+                yield* events.publish(Session.Event.Error, { sessionID: ctx.assistantMessage.sessionID, error })
+                yield* status.set(ctx.sessionID, { type: "idle" })
+                yield* cleanup()
               }),
             ),
             Effect.catch((error) => {

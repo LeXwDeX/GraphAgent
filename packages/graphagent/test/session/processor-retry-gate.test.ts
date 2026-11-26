@@ -698,3 +698,39 @@ smooth.it.effect(
     { config: cfg },
   ),
 )
+
+const abortInBackoff = run(
+  Stream.concat(
+    Stream.fromIterable([LLMEvent.stepStart({ index: 0 })]),
+    Stream.fail(proxyError("upstream_disconnected")),
+  ),
+)
+
+abortInBackoff.it.effect(
+  "session.processor records the abort when the interrupt lands in the retry backoff",
+  provideTmpdirInstance(
+    (dir) =>
+      Effect.gen(function* () {
+        const { processors, session, provider } = yield* boot()
+        const chat = yield* session.create({})
+        const parent = yield* user(chat.id, "answer")
+        const msg = yield* assistant(chat.id, parent.id, path.resolve(dir))
+        const mdl = yield* provider.getModel(ref.providerID, ref.modelID)
+        const handle = yield* processors.create({ assistantMessage: msg, sessionID: chat.id, model: mdl })
+
+        const running = yield* handle.process(input(chat.id, parent, mdl)).pipe(Effect.forkChild)
+        yield* Effect.yieldNow
+        // The first attempt has failed and the policy is asleep in its backoff.
+        yield* TestClock.adjust("1 second")
+        yield* Fiber.interrupt(running)
+        yield* TestClock.adjust("90 seconds")
+
+        // The old code left the message with no error and no finish, because the
+        // interrupt only broke the sleep.
+        expect(msg.error?.name).toBe("MessageAbortedError")
+        expect(msg.finish).toBe("error")
+        expect(abortInBackoff.count()).toBe(1)
+      }),
+    { config: cfg },
+  ),
+)
