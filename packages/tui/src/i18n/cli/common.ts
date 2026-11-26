@@ -15,6 +15,7 @@ export const commonZhCN = {
   "cli.common.yes": "是",
   "cli.common.no": "否",
   "cli.common.errorPrefix": "错误：",
+  "cli.common.loggedTo": "详情已写入日志：{path}",
   "cli.common.untrustedSkipped.one": "已跳过 {count} 项未受信任的项目配置。运行 /trust 查看。",
   "cli.common.untrustedSkipped.other": "已跳过 {count} 项未受信任的项目配置。运行 /trust 查看。",
   "cli.error.mcpFailed": 'MCP 服务器 "{name}" 启动失败。注意：GraphAgent 尚不支持 MCP 认证。',
@@ -32,6 +33,13 @@ export const commonZhCN = {
   "cli.error.remoteConfigRelogin": "运行 `graphagent auth login {url}` 重新认证。",
   "cli.error.configInvalid": "配置无效",
   "cli.error.configInvalidAt": "{path} 处的配置无效",
+  "cli.error.databaseBaselineMismatch":
+    "数据库 {path} 的基线 {found} 与当前版本 {expected} 不一致（v2.0.0 发布前基线会原地变更）",
+  "cli.error.databaseBaselineDelete": "删除该文件后重新启动即可；这是开发库，不含发布数据。",
+  "cli.error.databaseBaselineDbPath": "不确定是哪个文件时，运行 `graphagent db path` 查看。",
+  "cli.error.databaseBaselineOverride": "想保留这份数据：设 GRAPHAGENT_DB=/绝对/路径.db 指定另一个库。",
+  "cli.error.databaseNotADatabase":
+    "{path} 已有 {tables} 张表但没有 session 表，不是 GraphAgent 的数据库；请换一个路径（GRAPHAGENT_DB）。",
 } as const
 
 export const commonEn: Record<keyof typeof commonZhCN, string> = {
@@ -44,6 +52,7 @@ export const commonEn: Record<keyof typeof commonZhCN, string> = {
   "cli.common.yes": "Yes",
   "cli.common.no": "No",
   "cli.common.errorPrefix": "Error: ",
+  "cli.common.loggedTo": "Details written to the log: {path}",
   "cli.common.untrustedSkipped.one": "Skipped {count} untrusted project entry. Run /trust to review them.",
   "cli.common.untrustedSkipped.other": "Skipped {count} untrusted project entries. Run /trust to review them.",
   "cli.error.mcpFailed": 'MCP server "{name}" failed. Note, GraphAgent does not support MCP authentication yet.',
@@ -63,4 +72,13 @@ export const commonEn: Record<keyof typeof commonZhCN, string> = {
   "cli.error.remoteConfigRelogin": "Run `graphagent auth login {url}` to re-authenticate.",
   "cli.error.configInvalid": "Configuration is invalid",
   "cli.error.configInvalidAt": "Configuration is invalid at {path}",
+  "cli.error.databaseBaselineMismatch":
+    "Database {path} has baseline {found}, but this build writes {expected} (the baseline moves in place until v2.0.0)",
+  "cli.error.databaseBaselineDelete":
+    "Delete that file and start again; it is a development database and holds no release data.",
+  "cli.error.databaseBaselineDbPath": "Not sure which file? Run `graphagent db path`.",
+  "cli.error.databaseBaselineOverride":
+    "To keep this data, set GRAPHAGENT_DB=/absolute/path.db to point at another database.",
+  "cli.error.databaseNotADatabase":
+    "{path} already holds {tables} tables but no session table, so it is not a GraphAgent database; point GRAPHAGENT_DB somewhere else.",
 }

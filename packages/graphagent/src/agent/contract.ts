@@ -27,8 +27,10 @@ export interface Subject {
   readonly name: string
   /** Built-in agents, including ones a user configuration overrides. */
   readonly native?: boolean
-  /** The effective rules, as `Agent.get` resolves them. */
+  /** The effective rules, as `Agent.get` resolves them: the native rules, then the user's. */
   readonly permission: PermissionV1.Ruleset
+  /** The built-in rules alone. Present only on an agent `Agent.get` resolved. */
+  readonly nativeRules?: PermissionV1.Ruleset
   readonly contract?: Declared
 }
 
@@ -56,6 +58,26 @@ const FILE_TOOLS = ["edit", "write", "apply_patch"]
  */
 export function isWriterAgent(agent: Pick<Subject, "name" | "permission">): boolean {
   return agent.name !== "plan" && Permission.disabled(FILE_TOOLS, agent.permission).size === 0
+}
+
+/**
+ * Whether a call to the file tools is actually refused.
+ *
+ * The rules an agent runs under arrive in two parts: the built-in (native) rules
+ * and the configured ones. `Permission.ask` consults the native part first, so a
+ * native deny the configuration appends an allow to still denies. Judging from
+ * the flattened list alone therefore disagrees with the runtime; an agent that
+ * `Agent.get` resolved carries both parts, and both together answer it the way
+ * the runtime will.
+ */
+export function writesFiles(agent: Subject): boolean {
+  if (agent.name === "plan") return false
+  if (agent.nativeRules === undefined) return isWriterAgent(agent)
+  // A rule the user wrote can only close a tool, never open one the built-in
+  // rules deny: `Permission.ask` reads the native rules first. So the tools the
+  // user's own additions leave open decide, and among those a native deny wins.
+  const configured = agent.permission.slice(agent.nativeRules.length)
+  return Permission.disabled(FILE_TOOLS, configured).size === 0 && isWriterAgent(agent)
 }
 
 /** Whether the agent declares the composer role. Reads the declaration only; no rules are evaluated. */
@@ -103,7 +125,7 @@ export function merge(base: Declared | undefined, override: Declared | undefined
  */
 export function effective(agent: Subject): Effective {
   const declared = agent.contract
-  const writer = isWriterAgent(agent)
+  const writer = writesFiles(agent)
   return {
     role: declared?.role ?? "worker",
     visibility: declared?.visibility === "public" && !writer ? "public" : "private",
@@ -125,7 +147,7 @@ function writerReason(agent: Subject): string {
 function whyNotExpandable(name: string, agent: Subject | undefined): string | undefined {
   if (agent === undefined) return `agent "${name}" does not exist`
   if (isComposer(agent)) return `agent "${name}" is a composer, and a composer cannot dispatch another composer`
-  if (isWriterAgent(agent)) return writerReason(agent)
+  if (writesFiles(agent)) return writerReason(agent)
   if (agent.contract?.visibility !== "public") return `agent "${name}" is not public`
   return undefined
 }
@@ -195,7 +217,7 @@ export interface Diagnostic {
 export function diagnose(catalog: readonly Subject[]): Diagnostic[] {
   const found: Diagnostic[] = []
   for (const agent of catalog) {
-    if (agent.contract?.visibility === "public" && isWriterAgent(agent)) {
+    if (agent.contract?.visibility === "public" && writesFiles(agent)) {
       found.push({
         agent: agent.name,
         code: "public_writable",

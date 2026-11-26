@@ -1509,6 +1509,7 @@ export type Agent = {
   steps?: number
   contract?: AgentContract
   execution?: "foreground" | "background" | "auto"
+  nativeRules?: Array<PermissionRule>
 }
 
 export type AgentContract = {

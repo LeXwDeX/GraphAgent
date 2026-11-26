@@ -5,6 +5,7 @@ import { Vacuum } from "@graphagent/core/database/vacuum"
 import { Effect } from "effect"
 import { sql } from "drizzle-orm"
 import { effectCmd, fail } from "../effect-cmd"
+import { cmd } from "./cmd"
 import { t } from "@graphagent/tui/i18n"
 
 const QueryCommand = effectCmd({
@@ -44,13 +45,14 @@ const QueryCommand = effectCmd({
   }),
 })
 
-const PathCommand = effectCmd({
+const PathCommand = cmd<{}, {}>({
   command: "path",
   describe: t("cli.db.path.describe"),
-  instance: false,
-  handler: Effect.fn("Cli.db.path")(function* () {
+  // Deliberately not an `effectCmd`: the database layer is what a stale baseline
+  // kills, so the one command that names the file must not build it.
+  handler: () => {
     console.log(Database.path())
-  }),
+  },
 })
 
 // #524: the ONLY conversion path for legacy auto_vacuum=NONE databases.

@@ -5,7 +5,7 @@ import path from "path"
 import fs from "fs/promises"
 import { SqliteClient } from "@effect/sql-sqlite-bun"
 import { EffectDrizzleSqlite } from "@graphagent/effect-drizzle-sqlite"
-import { Effect, Exit, Layer } from "effect"
+import { Cause, Effect, Exit, Layer } from "effect"
 import { sql } from "drizzle-orm"
 import { DatabaseMigration } from "@graphagent/core/database/migration"
 import { baseline } from "@graphagent/core/database/migration.gen"
@@ -459,8 +459,19 @@ describe("DatabaseMigration", () => {
         yield* db.run(sql`CREATE TABLE session (id TEXT PRIMARY KEY)`)
         yield* db.run(sql`CREATE TABLE migration (id TEXT PRIMARY KEY, time_completed INTEGER NOT NULL)`)
         yield* db.run(sql`INSERT INTO migration (id, time_completed) VALUES ('baseline-stale', 0)`)
-        const exit = yield* Effect.exit(DatabaseMigration.apply(db))
+        const exit = yield* Effect.exit(DatabaseMigration.apply(db, "dev.db"))
         expect(Exit.isFailure(exit)).toBe(true)
+        // The failure names the file and both fingerprints, so the CLI can print
+        // an action instead of an "Unexpected error".
+        if (Exit.isFailure(exit)) {
+          const error = Cause.squash(exit.cause)
+          expect(error).toBeInstanceOf(DatabaseMigration.BaselineMismatch)
+          if (error instanceof DatabaseMigration.BaselineMismatch) {
+            expect(error.filename).toBe("dev.db")
+            expect(error.found).toBe("baseline-stale")
+            expect(error.expected).toBe(baseline.id)
+          }
+        }
         expect(yield* db.all(sql`SELECT id FROM migration`)).toEqual([{ id: "baseline-stale" }])
       }),
     )

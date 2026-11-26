@@ -93,6 +93,12 @@ export const Info = Schema.Struct({
    * (`TaskExecution.resolve`). Omitted is `auto`: the call decides.
    */
   execution: Schema.optional(ConfigExecutionV1.Mode),
+  /**
+   * The built-in rules this agent runs under, before the configured ones. Set by
+   * `hydrate`; `AgentContract.writesFiles` needs both parts because `Permission.ask`
+   * consults the native rules first.
+   */
+  nativeRules: Schema.optional(Schema.Array(PermissionV1.Rule)),
 }).annotate({ identifier: "Agent" })
 export type Info = DeepMutable<Schema.Schema.Type<typeof Info>>
 
@@ -593,12 +599,16 @@ export const layer = Layer.effect(
           const latest = yield* config.get()
           const key = Object.entries(agents).find(([, item]) => item === info)?.[0] ?? agent
           const provenance = agentHookProvenance(latest, key)
+          const policy = yield* permissionPolicy(agent)
           return {
             ...info,
             hooks: latest.agent?.[key]?.hooks,
             hookOrigin: provenance?.origin,
             hookSource: provenance?.source ?? "project",
-            permission: (yield* permissionPolicy(agent)).rules,
+            permission: policy.rules,
+            // The built-in rules as their own list, so a caller can apply the
+            // native-first precedence `Permission.ask` uses.
+            nativeRules: policy.native,
           }
         })
         const get = Effect.fnUntraced(function* (agent: string) {

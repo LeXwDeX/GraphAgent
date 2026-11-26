@@ -20,6 +20,9 @@ import { ExportCommand } from "./cli/cmd/export"
 import { ImportCommand } from "./cli/cmd/import"
 import { TuiThreadCommand } from "./cli/cmd/tui"
 import { EOL } from "os"
+import path from "path"
+import { appendFileSync } from "fs"
+import { Global } from "@graphagent/core/global"
 import { PrCommand } from "./cli/cmd/pr"
 import { SessionCommand } from "./cli/cmd/session"
 import { DbCommand } from "./cli/cmd/db"
@@ -122,12 +125,26 @@ try {
     await cli.parse()
   }
 } catch (e) {
+  // A startup failure never reaches the session logger, so it leaves no trace at
+  // all. Write the same line the TUI worker's crash handler writes, then say
+  // where it went.
+  const detail = e instanceof Error ? (e.stack ?? e.message) : String(e)
+  const logPath = path.join(Global.Path.log, `${APP_NAME}.log`)
+  let logged = false
+  try {
+    appendFileSync(logPath, `timestamp=${new Date().toISOString()} level=ERROR service=cli kind=startup error=${JSON.stringify(detail)}\n`)
+    logged = true
+  } catch {
+    // The log directory may be gone; never let the crash handler itself throw.
+  }
   const formatted = FormatError(e)
   if (formatted) UI.error(formatted)
   if (formatted === undefined) {
     UI.error(t("cli.common.unexpectedError") + EOL)
     process.stderr.write(errorMessage(e) + EOL)
+    if (e instanceof Error && e.stack) process.stderr.write(e.stack + EOL)
   }
+  if (logged) UI.error(t("cli.common.loggedTo", { path: logPath }))
   process.exitCode = 1
 } finally {
   // Some subprocesses don't react properly to SIGTERM and similar signals.

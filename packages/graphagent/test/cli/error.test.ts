@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test"
+import { DatabaseMigration } from "@graphagent/core/database/migration"
 import { FormatError } from "../../src/cli/error"
 import { UI } from "../../src/cli/ui"
 
@@ -77,5 +78,26 @@ describe("cli.error", () => {
 
   test("formats cancelled UI errors as empty output", () => {
     expect(FormatError(new UI.CancelledError())).toBe("")
+  })
+
+  test("formats a stale database with the file, both fingerprints and the way out", () => {
+    const formatted = FormatError(
+      new DatabaseMigration.BaselineMismatch({
+        filename: "/data/graphagent-local.db",
+        found: "baseline-stale",
+        expected: "baseline-current",
+      }),
+    )
+    expect(formatted).toContain("/data/graphagent-local.db")
+    expect(formatted).toContain("baseline-stale")
+    expect(formatted).toContain("baseline-current")
+    expect(formatted).toContain("graphagent db path")
+    expect(formatted).not.toContain("Unexpected error")
+  })
+
+  test("formats a file that is not a database", () => {
+    const formatted = FormatError(new DatabaseMigration.NotADatabase({ filename: "/data/other.db", tables: 3 }))
+    expect(formatted).toContain("/data/other.db")
+    expect(formatted).toContain("3")
   })
 })

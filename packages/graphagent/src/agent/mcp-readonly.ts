@@ -23,7 +23,7 @@ import { AgentContract } from "./contract"
  */
 
 /** What `qualifies` reads of an agent. */
-type Subject = Pick<Agent.Info, "name" | "native" | "mode" | "permission" | "contract">
+type Subject = Pick<Agent.Info, "name" | "native" | "mode" | "permission" | "contract" | "nativeRules">
 
 /** The rules `Agent.permissionPolicy` returns: the native rules, then all the rules, the user's after the native ones. */
 export interface Policy {
@@ -42,7 +42,7 @@ export function qualifies(agent: Subject): boolean {
   return (
     agent.native === true &&
     agent.mode === "subagent" &&
-    !AgentContract.isWriterAgent(agent) &&
+    !AgentContract.writesFiles(agent) &&
     !AgentContract.isComposer(agent)
   )
 }

@@ -1147,14 +1147,6 @@ export const layer = Layer.effect(
               return yield* Effect.fail(incompleteReasoning(ctx.attempt))
             }
           }).pipe(
-            Effect.onInterrupt(() =>
-              Effect.gen(function* () {
-                aborted = true
-                if (!ctx.assistantMessage.error) {
-                  yield* halt(new DOMException("Aborted", "AbortError"))
-                }
-              }),
-            ),
             Effect.catchCauseIf(
               (cause) => !Cause.hasInterruptsOnly(cause),
               (cause) => Effect.fail(Cause.squash(cause)),
@@ -1214,6 +1206,13 @@ export const layer = Layer.effect(
                     ),
                   ),
               }),
+            ),
+            // Outside `retry`: the backoff sleep sits between attempts, and an
+            // interrupt there used to leave the turn with no error, no finish and
+            // an empty assistant message. `halt` classifies the abort the same way
+            // the policy does, so the loop sees a turn that is over.
+            Effect.onInterrupt(() =>
+              Effect.suspend(() => (aborted = true, ctx.assistantMessage.error ? Effect.void : halt(new DOMException("Aborted", "AbortError")).pipe(Effect.andThen(Effect.sync(() => void (ctx.assistantMessage.finish = "error")))))),
             ),
             Effect.catch((error) => {
               if (!isCompactionTimeout(error)) return halt(error)

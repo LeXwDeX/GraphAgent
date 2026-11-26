@@ -123,6 +123,30 @@ export function FormatError(input: unknown): string | undefined {
     ].join("\n")
   }
 
+  // DatabaseBaselineMismatch: { filename, found, expected }
+  const baselineMismatch = configData(input, "DatabaseBaselineMismatch")
+  if (baselineMismatch) {
+    return [
+      t("cli.error.databaseBaselineMismatch", {
+        path: stringField(baselineMismatch, "filename") ?? "database",
+        found: stringField(baselineMismatch, "found") ?? "?",
+        expected: stringField(baselineMismatch, "expected") ?? "?",
+      }),
+      t("cli.error.databaseBaselineDelete"),
+      t("cli.error.databaseBaselineDbPath"),
+      t("cli.error.databaseBaselineOverride"),
+    ].join("\n")
+  }
+
+  // DatabaseNotADatabase: { filename, tables }
+  const notADatabase = configData(input, "DatabaseNotADatabase")
+  if (notADatabase) {
+    return t("cli.error.databaseNotADatabase", {
+      path: stringField(notADatabase, "filename") ?? "database",
+      tables: typeof notADatabase.tables === "number" ? String(notADatabase.tables) : "?",
+    })
+  }
+
   // UICancelledError: user cancelled an interactive CLI prompt
   if (isTaggedError(input, "UICancelledError") || NamedError.hasName(input, "UICancelledError")) {
     return ""
